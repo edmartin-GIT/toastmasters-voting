@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Doral Toastmasters Voting</title>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+    <script crossorigin src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDK -->
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-app-compat.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/10.7.1/firebase-database-compat.js"></script>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script>
+        // =============================================================
+        // FIREBASE CONFIGURATION - Replace with your own Firebase config
+        // =============================================================
+        const firebaseConfig = {
+            apiKey: "AIzaSyCOJ6n4SmqOzRdm8v6RtBtbs5ObMAsIctc",
+            authDomain: "toastmaster-voting.firebaseapp.com",
+            databaseURL: "https://toastmaster-voting-default-rtdb.firebaseio.com",
+            projectId: "toastmaster-voting",
+            storageBucket: "toastmaster-voting.firebasestorage.app",
+            messagingSenderId: "928428178999",
+            appId: "1:928428178999:web:97b56d65e6bed03f0c49b2"
+        };
+
+        firebase.initializeApp(firebaseConfig);
+        const db = firebase.database();
+    </script>
+
+    <script type="text/babel">
+        const { useState, useEffect, useCallback, useMemo } = React;
+        const ADMIN_CODE = '1234';
+
+        // Get or create a persistent voter ID
+        function getVoterId() {
+            let id = localStorage.getItem('toastmasters-voter-id');
+            if (!id) {
+                id = crypto.randomUUID();
+                localStorage.setItem('toastmasters-voter-id', id);
+            }
+            return id;
+        }
+
+        function SetupSection({ title, category, icon, candidates, onAdd, onRemove, onClear }) {
+            const [inputValue, setInputValue] = useState('');
+            const handleAdd = () => {
+                const name = inputValue.trim();
+                if (name && !candidates.includes(name)) {
+                    onAdd(category, name);
+                    setInputValue('');
+                }
+            };
+            return (
+                <div className="mb-6 bg-white rounded-lg p-4 shadow-sm border border-gray-200">
+                    <div className="flex items-center justify-between mb-3">
+                        <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                            <span className="text-2xl">{icon}</span> {title}
+                        </h3>
+                        {candidates.length > 0 && (
+                            <button onClick={() => onClear(category)} className="text-xs text-red-600 hover:text-red-700 font-medium">
+                                Clear All
+                            </button>
+                        )}
+                    </div>
+                    <div className="flex gap-2 mb-3">
+                        <input
+                            type="text"
+                            value={inputValue}
+                            onChange={(e) => setInputValue(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); handleAdd(); } }}
+                            placeholder="Type name and press Enter"
+                            className="flex-1 p-3 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                        />
+                        <button
+                            onClick={handleAdd}
+                            className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-medium active:scale-95 transition-all"
+                        >
+                            +
+                        </button>
+                    </div>
+                    {candidates.length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4">No participants yet</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {candidates.map((name, idx) => (
+                                <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg">
+                                    <span className="text-gray-700">{name}</span>
+                                    <button
+                                        onClick={() => onRemove(category, name)}
+                                        className="w-8 h-8 flex items-center justify-center text-red-400 hover:text-red-600 hover:bg-red-50 rounded-full transition-colors"
+                                    >
+                                        &#x2715;
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                    <p className="text-xs text-gray-400 mt-2">{candidates.length} participant(s)</p>
+                </div>
+            );
+        }
+
+        function ToastmastersVotingApp() {
+            const [voterId] = useState(getVoterId);
+            const [candidates, setCandidates] = useState({ speaker: [], tableTopics: [], evaluator: [] });
+            const [votes, setVotes] = useState({ speaker: null, tableTopics: null, evaluator: null });
+            const [hasVoted, setHasVoted] = useState(false);
+            const [showConfirmation, setShowConfirmation] = useState(false);
+            const [activeTab, setActiveTab] = useState('vote');
+            const [adminCode, setAdminCode] = useState('');
+            const [isAdmin, setIsAdmin] = useState(false);
+            const [isSetupAdmin, setIsSetupAdmin] = useState(false);
+            const [setupAdminCode, setSetupAdminCode] = useState('');
+            const [allVotes, setAllVotes] = useState({});
+            const [loading, setLoading] = useState(true);
+            const [dbConnected, setDbConnected] = useState(false);
+
+            // Monitor connection state
+            useEffect(() => {
+                const connRef = db.ref('.info/connected');
+                connRef.on('value', (snap) => {
+                    setDbConnected(snap.val() === true);
+                });
+                return () => connRef.off();
+            }, []);
+
+            // Sync candidates from Firebase in real-time
+            useEffect(() => {
+                const ref = db.ref('candidates');
+                ref.on('value', (snapshot) => {
+                    const data = snapshot.val();
+                    setCandidates({
+                        speaker: data?.speaker || [],
+                        tableTopics: data?.tableTopics || [],
+                        evaluator: data?.evaluator || []
+                    });
+                    setLoading(false);
+                });
+                return () => ref.off();
+            }, []);
+
+            // Check if this voter has already voted (real-time)
+            useEffect(() => {
+                const ref = db.ref(`votes/${voterId}`);
+                ref.on('value', (snapshot) => {
+                    if (snapshot.exists()) {
+                        const data = snapshot.val();
+                        setHasVoted(true);
+                        setShowConfirmation(true);
+                        setVotes({
+                            speaker: data.speaker || null,
+                            tableTopics: data.tableTopics || null,
+                            evaluator: data.evaluator || null
+                        });
+                    } else {
+                        // Admin reset votes - allow voting again
+                        setHasVoted(false);
+                        setShowConfirmation(false);
+                        setVotes({ speaker: null, tableTopics: null, evaluator: null });
+                    }
+                });
+                return () => ref.off();
+            }, [voterId]);
+
+            // Sync all votes for results (admin view)
+            useEffect(() => {
+                const ref = db.ref('votes');
+                ref.on('value', (snapshot) => {
+                    setAllVotes(snapshot.val() || {});
+                });
+                return () => ref.off();
+            }, []);
+
+            // ---- Admin: Candidate management (writes to Firebase) ----
+            const addCandidate = (category, name) => {
+                const updated = [...(candidates[category] || []), name];
+                db.ref(`candidates/${category}`).set(updated);
+            };
+
+            const removeCandidate = (category, name) => {
+                const updated = candidates[category].filter(n => n !== name);
+                db.ref(`candidates/${category}`).set(updated);
+            };
+
+            const clearCategory = (category) => {
+                db.ref(`candidates/${category}`).set([]);
+            };
+
+            // ---- Voting ----
+            const handleVote = (category, name) => {
+                if (hasVoted) return;
+                setVotes(prev => ({ ...prev, [category]: name }));
+            };
+
+            const submitVotes = () => {
+                if (!votes.speaker || !votes.tableTopics || !votes.evaluator) {
+                    alert('Please vote in all categories before submitting.');
+                    return;
+                }
+                // Write vote to Firebase
+                db.ref(`votes/${voterId}`).set({
+                    speaker: votes.speaker,
+                    tableTopics: votes.tableTopics,
+                    evaluator: votes.evaluator,
+                    timestamp: Date.now()
+                });
+                setHasVoted(true);
+                setShowConfirmation(true);
+            };
+
+            // ---- Admin actions ----
+            const checkAdminCode = () => {
+                if (adminCode === ADMIN_CODE) {
+                    setIsAdmin(true);
+                } else {
+                    alert('Incorrect code');
+                }
+            };
+
+            const checkSetupAdminCode = () => {
+                if (setupAdminCode === ADMIN_CODE) {
+                    setIsSetupAdmin(true);
+                } else {
+                    alert('Incorrect code');
+                }
+            };
+
+            const resetAllVotes = () => {
+                if (window.confirm('Are you sure you want to clear ALL votes? This cannot be undone.')) {
+                    db.ref('votes').remove();
+                }
+            };
+
+            // ---- Compute results from all Firebase votes ----
+            const results = useMemo(() => {
+                const r = { speaker: {}, tableTopics: {}, evaluator: {} };
+                Object.values(allVotes).forEach(vote => {
+                    ['speaker', 'tableTopics', 'evaluator'].forEach(cat => {
+                        if (vote[cat]) {
+                            r[cat][vote[cat]] = (r[cat][vote[cat]] || 0) + 1;
+                        }
+                    });
+                });
+                return r;
+            }, [allVotes]);
+
+            const totalVoters = Object.keys(allVotes).length;
+
+            // ---- Sub-components ----
+            const CategorySection = ({ title, category, icon }) => (
+                <div className="mb-6">
+                    <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
+                        <span className="text-2xl">{icon}</span> {title}
+                    </h3>
+                    {candidates[category].length === 0 ? (
+                        <p className="text-gray-400 text-sm text-center py-4 bg-white rounded-lg border border-gray-200">No participants - add them in Setup</p>
+                    ) : (
+                        <div className="space-y-2">
+                            {candidates[category].map(name => (
+                                <button
+                                    key={name}
+                                    onClick={() => handleVote(category, name)}
+                                    disabled={hasVoted}
+                                    className={`w-full p-4 rounded-lg text-left transition-all duration-200 ${
+                                        votes[category] === name
+                                            ? 'bg-red-600 text-white shadow-md scale-[1.02] border-2 border-red-700'
+                                            : 'bg-white text-gray-700 border-2 border-gray-300 hover:border-red-400 hover:bg-red-50'
+                                    } ${hasVoted ? 'opacity-60 cursor-not-allowed' : 'active:scale-[0.98]'}`}
+                                >
+                                    <span className="font-medium">{name}</span>
+                                </button>
+                            ))}
+                        </div>
+                    )}
+                </div>
+            );
+
+            const ResultsChart = ({ title, category, icon }) => {
+                const categoryResults = {};
+                candidates[category].forEach(name => {
+                    categoryResults[name] = results[category]?.[name] || 0;
+                });
+                const maxVotes = Math.max(...Object.values(categoryResults), 1);
+                const winner = Object.entries(categoryResults).reduce((best, [name, count]) =>
+                    count > (best.count || 0) ? { name, count } : best, { name: '', count: 0 });
+
+                return (
+                    <div className="mb-6 bg-white rounded-lg p-4 shadow-sm border border-gray-200">
+                        <h3 className="text-lg font-semibold text-gray-800 mb-4 flex items-center gap-2">
+                            <span className="text-2xl">{icon}</span> {title}
+                        </h3>
+                        {candidates[category].length === 0 ? (
+                            <p className="text-gray-400 text-sm text-center py-4">No participants</p>
+                        ) : (
+                            <div className="space-y-3">
+                                {Object.entries(categoryResults)
+                                    .sort(([, a], [, b]) => b - a)
+                                    .map(([name, count]) => (
+                                    <div key={name}>
+                                        <div className="flex justify-between text-sm mb-1">
+                                            <span className={`font-medium ${count > 0 && count === winner.count ? 'text-red-700' : 'text-gray-700'}`}>
+                                                {name} {count > 0 && count === winner.count ? ' \u2B50' : ''}
+                                            </span>
+                                            <span className="text-red-600 font-bold">{count} vote{count !== 1 ? 's' : ''}</span>
+                                        </div>
+                                        <div className="h-6 bg-gray-100 rounded-full overflow-hidden">
+                                            <div
+                                                className="h-full bg-gradient-to-r from-red-500 to-red-600 rounded-full transition-all duration-500"
+                                                style={{ width: count > 0 ? `${(count / maxVotes) * 100}%` : '0%' }}
+                                            />
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            };
+
+            if (loading) {
+                return (
+                    <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+                        <div className="text-center">
+                            <div className="text-4xl mb-4 animate-spin">&#x23F3;</div>
+                            <p className="text-gray-600">Connecting to voting system...</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen bg-gray-50">
+                    <header className="bg-white border-b-4 border-red-600 shadow-md sticky top-0 z-10">
+                        <div className="max-w-md mx-auto px-4 py-3">
+                            <div className="flex items-center justify-center gap-3 mb-2">
+                                <img
+                                    src="https://www.toastmasters.org/~/media/8EFEA9133DC34E1696004E6A9E87005D.ashx"
+                                    alt="Toastmasters Logo"
+                                    className="h-12 w-auto"
+                                />
+                            </div>
+                            <h1 className="text-lg font-bold text-center text-gray-800">Welcome to Doral Toastmasters Club (#861)</h1>
+                            <p className="text-red-600 text-center text-sm mt-1 font-semibold">Club Voting System</p>
+                        </div>
+                    </header>
+
+                    <nav className="bg-white shadow-sm sticky top-[112px] z-10 border-b border-gray-200">
+                        <div className="max-w-md mx-auto flex">
+                            <button
+                                onClick={() => setActiveTab('setup')}
+                                className={`flex-1 py-3 text-sm font-medium transition-colors ${
+                                    activeTab === 'setup' ? 'text-red-600 border-b-3 border-red-600 bg-red-50' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+                                }`}
+                            >
+                                &#x2699;&#xFE0F; Setup
+                            </button>
+                            <button
+                                onClick={() => { setActiveTab('vote'); setIsAdmin(false); setAdminCode(''); setIsSetupAdmin(false); setSetupAdminCode(''); }}
+                                className={`flex-1 py-3 text-sm font-medium transition-colors ${
+                                    activeTab === 'vote' ? 'text-red-600 border-b-3 border-red-600 bg-red-50' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+                                }`}
+                            >
+                                &#x1F5F3;&#xFE0F; Vote
+                            </button>
+                            <button
+                                onClick={() => setActiveTab('results')}
+                                className={`flex-1 py-3 text-sm font-medium transition-colors ${
+                                    activeTab === 'results' ? 'text-red-600 border-b-3 border-red-600 bg-red-50' : 'text-gray-600 hover:text-gray-800 hover:bg-gray-50'
+                                }`}
+                            >
+                                &#x1F4CA; Results
+                            </button>
+                        </div>
+                    </nav>
+
+                    <main className="max-w-md mx-auto p-4 pb-24">
+                        {/* Connection indicator */}
+                        <div className={`mb-3 text-xs text-center py-1 rounded-full ${dbConnected ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
+                            <span className={`inline-block w-2 h-2 rounded-full mr-1 ${dbConnected ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`}></span>
+                            {dbConnected ? 'Connected - votes sync in real-time' : 'Reconnecting...'}
+                        </div>
+
+                        {/* ============ SETUP TAB ============ */}
+                        {activeTab === 'setup' && (
+                            <>
+                                {!isSetupAdmin ? (
+                                    <div className="py-12">
+                                        <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                                            <div className="text-center mb-6">
+                                                <div className="text-4xl mb-2">&#x1F510;</div>
+                                                <h2 className="text-xl font-bold text-gray-800">Admin Access</h2>
+                                                <p className="text-gray-600 text-sm mt-1">Enter the code to manage participants</p>
+                                            </div>
+                                            <input
+                                                type="password"
+                                                value={setupAdminCode}
+                                                onChange={(e) => setSetupAdminCode(e.target.value)}
+                                                placeholder="Enter admin code"
+                                                className="w-full p-4 border border-gray-300 rounded-lg text-center text-lg tracking-widest mb-4 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                                onKeyDown={(e) => e.key === 'Enter' && checkSetupAdminCode()}
+                                            />
+                                            <button
+                                                onClick={checkSetupAdminCode}
+                                                className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold active:scale-[0.98] transition-all"
+                                            >
+                                                Access Setup
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                                            <p className="text-sm text-blue-900">
+                                                <strong>&#x1F4DD; Setup:</strong> Add participants for each category. Changes sync to all devices in real-time!
+                                            </p>
+                                        </div>
+                                        <SetupSection
+                                            title="Best Speaker"
+                                            category="speaker"
+                                            icon="&#x1F3C6;"
+                                            candidates={candidates.speaker}
+                                            onAdd={addCandidate}
+                                            onRemove={removeCandidate}
+                                            onClear={clearCategory}
+                                        />
+                                        <SetupSection
+                                            title="Best Table Topics"
+                                            category="tableTopics"
+                                            icon="&#x1F4AC;"
+                                            candidates={candidates.tableTopics}
+                                            onAdd={addCandidate}
+                                            onRemove={removeCandidate}
+                                            onClear={clearCategory}
+                                        />
+                                        <SetupSection
+                                            title="Best Evaluator"
+                                            category="evaluator"
+                                            icon="&#x1F4DD;"
+                                            candidates={candidates.evaluator}
+                                            onAdd={addCandidate}
+                                            onRemove={removeCandidate}
+                                            onClear={clearCategory}
+                                        />
+                                        <button
+                                            onClick={() => setActiveTab('vote')}
+                                            className="w-full py-4 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold text-lg shadow-md active:scale-[0.98] transition-all mt-4"
+                                        >
+                                            Start Voting &#x2192;
+                                        </button>
+                                    </>
+                                )}
+                            </>
+                        )}
+
+                        {/* ============ VOTE TAB ============ */}
+                        {activeTab === 'vote' && (
+                            <>
+                                {showConfirmation ? (
+                                    <div className="text-center py-12">
+                                        <div className="text-6xl mb-4">&#x1F389;</div>
+                                        <h2 className="text-2xl font-bold text-gray-800 mb-2">Thank You!</h2>
+                                        <p className="text-gray-600 mb-6">Your votes have been recorded.</p>
+                                        <div className="bg-white rounded-lg p-4 shadow-sm border border-gray-200 text-left mb-6">
+                                            <h3 className="font-semibold text-gray-700 mb-3">Your Selections:</h3>
+                                            <div className="space-y-2 text-sm">
+                                                <p><span className="text-gray-500">Best Speaker:</span> <span className="font-medium">{votes.speaker}</span></p>
+                                                <p><span className="text-gray-500">Best Table Topics:</span> <span className="font-medium">{votes.tableTopics}</span></p>
+                                                <p><span className="text-gray-500">Best Evaluator:</span> <span className="font-medium">{votes.evaluator}</span></p>
+                                            </div>
+                                        </div>
+                                        <p className="text-gray-400 text-xs">Your vote is saved. You can close this page.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <CategorySection title="Best Speaker" category="speaker" icon="&#x1F3C6;" />
+                                        <CategorySection title="Best Table Topics" category="tableTopics" icon="&#x1F4AC;" />
+                                        <CategorySection title="Best Evaluator" category="evaluator" icon="&#x1F4DD;" />
+
+                                        <button
+                                            onClick={submitVotes}
+                                            disabled={!votes.speaker || !votes.tableTopics || !votes.evaluator}
+                                            className={`w-full py-4 rounded-lg font-semibold text-lg shadow-md transition-all duration-200 ${
+                                                votes.speaker && votes.tableTopics && votes.evaluator
+                                                    ? 'bg-red-600 hover:bg-red-700 text-white active:scale-[0.98]'
+                                                    : 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                                            }`}
+                                        >
+                                            Submit Votes
+                                        </button>
+
+                                        <div className="mt-4 text-center text-sm text-gray-500">
+                                            {[votes.speaker, votes.tableTopics, votes.evaluator].filter(Boolean).length}/3 categories selected
+                                        </div>
+                                    </>
+                                )}
+                            </>
+                        )}
+
+                        {/* ============ RESULTS TAB ============ */}
+                        {activeTab === 'results' && (
+                            <>
+                                {!isAdmin ? (
+                                    <div className="py-12">
+                                        <div className="bg-white rounded-lg p-6 shadow-sm border border-gray-200">
+                                            <div className="text-center mb-6">
+                                                <div className="text-4xl mb-2">&#x1F510;</div>
+                                                <h2 className="text-xl font-bold text-gray-800">Admin Access</h2>
+                                                <p className="text-gray-600 text-sm mt-1">Enter the code to view results</p>
+                                            </div>
+                                            <input
+                                                type="password"
+                                                value={adminCode}
+                                                onChange={(e) => setAdminCode(e.target.value)}
+                                                placeholder="Enter admin code"
+                                                className="w-full p-4 border border-gray-300 rounded-lg text-center text-lg tracking-widest mb-4 focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-red-500"
+                                                onKeyDown={(e) => e.key === 'Enter' && checkAdminCode()}
+                                            />
+                                            <button
+                                                onClick={checkAdminCode}
+                                                className="w-full py-3 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold active:scale-[0.98] transition-all"
+                                            >
+                                                View Results
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="flex items-center justify-between mb-6">
+                                            <h2 className="text-xl font-bold text-gray-800">Live Results</h2>
+                                            <div className="flex items-center gap-3">
+                                                <span className="text-sm text-gray-600 font-medium">{totalVoters} vote{totalVoters !== 1 ? 's' : ''}</span>
+                                                <span className="flex items-center gap-1 text-sm text-green-600">
+                                                    <span className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></span>
+                                                    Live
+                                                </span>
+                                            </div>
+                                        </div>
+                                        <ResultsChart title="Best Speaker" category="speaker" icon="&#x1F3C6;" />
+                                        <ResultsChart title="Best Table Topics" category="tableTopics" icon="&#x1F4AC;" />
+                                        <ResultsChart title="Best Evaluator" category="evaluator" icon="&#x1F4DD;" />
+
+                                        <button
+                                            onClick={resetAllVotes}
+                                            className="w-full py-3 bg-gray-800 hover:bg-gray-900 text-white rounded-lg font-semibold mt-6 active:scale-[0.98] transition-all"
+                                        >
+                                            &#x1F5D1;&#xFE0F; Reset All Votes (New Meeting)
+                                        </button>
+                                        <p className="text-xs text-gray-400 text-center mt-2">This clears all votes so members can vote again for a new session.</p>
+                                    </>
+                                )}
+                            </>
+                        )}
+                    </main>
+
+                    <div className="h-6 bg-gradient-to-t from-white to-transparent fixed bottom-0 left-0 right-0 pointer-events-none" />
+                </div>
+            );
+        }
+
+        ReactDOM.render(<ToastmastersVotingApp />, document.getElementById('root'));
+    </script>
+</body>
+</html>
