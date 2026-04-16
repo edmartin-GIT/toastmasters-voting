@@ -17,7 +17,7 @@
 
     <script>
         // =============================================================
-        // FIREBASE CONFIGURATION - Replace with your own Firebase config
+        // FIREBASE CONFIGURATION
         // =============================================================
         const firebaseConfig = {
             apiKey: "AIzaSyCOJ6n4SmqOzRdm8v6RtBtbs5ObMAsIctc",
@@ -37,7 +37,6 @@
         const { useState, useEffect, useCallback, useMemo } = React;
         const ADMIN_CODE = '1234';
 
-        // Get or create a persistent voter ID
         function getVoterId() {
             let id = localStorage.getItem('toastmasters-voter-id');
             if (!id) {
@@ -120,6 +119,7 @@
             const [allVotes, setAllVotes] = useState({});
             const [loading, setLoading] = useState(true);
             const [dbConnected, setDbConnected] = useState(false);
+            const [connectionError, setConnectionError] = useState(false);
 
             // Monitor connection state
             useEffect(() => {
@@ -129,6 +129,17 @@
                 });
                 return () => connRef.off();
             }, []);
+
+            // Connection timeout: if not loaded in 8 seconds, show error
+            useEffect(() => {
+                const timer = setTimeout(() => {
+                    if (loading) {
+                        setLoading(false);
+                        setConnectionError(true);
+                    }
+                }, 8000);
+                return () => clearTimeout(timer);
+            }, [loading]);
 
             // Sync candidates from Firebase in real-time
             useEffect(() => {
@@ -141,6 +152,7 @@
                         evaluator: data?.evaluator || []
                     });
                     setLoading(false);
+                    setConnectionError(false);
                 });
                 return () => ref.off();
             }, []);
@@ -159,7 +171,6 @@
                             evaluator: data.evaluator || null
                         });
                     } else {
-                        // Admin reset votes - allow voting again
                         setHasVoted(false);
                         setShowConfirmation(false);
                         setVotes({ speaker: null, tableTopics: null, evaluator: null });
@@ -177,7 +188,6 @@
                 return () => ref.off();
             }, []);
 
-            // ---- Admin: Candidate management (writes to Firebase) ----
             const addCandidate = (category, name) => {
                 const updated = [...(candidates[category] || []), name];
                 db.ref(`candidates/${category}`).set(updated);
@@ -192,7 +202,6 @@
                 db.ref(`candidates/${category}`).set([]);
             };
 
-            // ---- Voting ----
             const handleVote = (category, name) => {
                 if (hasVoted) return;
                 setVotes(prev => ({ ...prev, [category]: name }));
@@ -203,7 +212,6 @@
                     alert('Please vote in all categories before submitting.');
                     return;
                 }
-                // Write vote to Firebase
                 db.ref(`votes/${voterId}`).set({
                     speaker: votes.speaker,
                     tableTopics: votes.tableTopics,
@@ -214,7 +222,6 @@
                 setShowConfirmation(true);
             };
 
-            // ---- Admin actions ----
             const checkAdminCode = () => {
                 if (adminCode === ADMIN_CODE) {
                     setIsAdmin(true);
@@ -237,7 +244,6 @@
                 }
             };
 
-            // ---- Compute results from all Firebase votes ----
             const results = useMemo(() => {
                 const r = { speaker: {}, tableTopics: {}, evaluator: {} };
                 Object.values(allVotes).forEach(vote => {
@@ -252,7 +258,6 @@
 
             const totalVoters = Object.keys(allVotes).length;
 
-            // ---- Sub-components ----
             const CategorySection = ({ title, category, icon }) => (
                 <div className="mb-6">
                     <h3 className="text-lg font-semibold text-gray-800 mb-3 flex items-center gap-2">
@@ -334,6 +339,29 @@
                 );
             }
 
+            if (connectionError) {
+                return (
+                    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+                        <div className="bg-white rounded-lg p-6 shadow-md border border-red-200 max-w-sm w-full text-center">
+                            <div className="text-4xl mb-3">&#x26A0;&#xFE0F;</div>
+                            <h2 className="text-xl font-bold text-gray-800 mb-2">Cannot Connect</h2>
+                            <p className="text-gray-600 text-sm mb-4">
+                                Unable to connect to the voting database. This is usually a Firebase security rules issue.
+                            </p>
+                            <p className="text-gray-500 text-xs mb-4">
+                                Admin: Go to Firebase Console → Realtime Database → Rules and set read/write to <code className="bg-gray-100 px-1 rounded">true</code>.
+                            </p>
+                            <button
+                                onClick={() => { setLoading(true); setConnectionError(false); }}
+                                className="w-full py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg font-semibold"
+                            >
+                                Retry
+                            </button>
+                        </div>
+                    </div>
+                );
+            }
+
             return (
                 <div className="min-h-screen bg-gray-50">
                     <header className="bg-white border-b-4 border-red-600 shadow-md sticky top-0 z-10">
@@ -343,6 +371,7 @@
                                     src="logo.png"
                                     alt="Toastmasters Logo"
                                     className="h-14 w-auto"
+                                    onError={(e) => { e.target.style.display = 'none'; }}
                                 />
                             </div>
                             <h1 className="text-lg font-bold text-center text-gray-800">Welcome to Doral Toastmasters Club (#861)</h1>
@@ -380,7 +409,6 @@
                     </nav>
 
                     <main className="max-w-md mx-auto p-4 pb-24">
-                        {/* Connection indicator */}
                         <div className={`mb-3 text-xs text-center py-1 rounded-full ${dbConnected ? 'bg-green-50 text-green-700' : 'bg-yellow-50 text-yellow-700'}`}>
                             <span className={`inline-block w-2 h-2 rounded-full mr-1 ${dbConnected ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`}></span>
                             {dbConnected ? 'Connected - votes sync in real-time' : 'Reconnecting...'}
@@ -563,7 +591,8 @@
             );
         }
 
-        ReactDOM.render(<ToastmastersVotingApp />, document.getElementById('root'));
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<ToastmastersVotingApp />);
     </script>
 </body>
 </html>
